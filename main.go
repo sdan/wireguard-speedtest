@@ -14,13 +14,15 @@ import (
 
 	"github.com/go-ping/ping"
 	wireproxy "github.com/octeep/wireproxy"
+	"golang.org/x/sync/syncmap"
 )
 
 func main() {
 	// Discards log output, comment out to see log output
 	log.SetOutput(ioutil.Discard)
 
-	sortedPeers := make(map[string]time.Duration)
+	// sortedPeers := make(map[string]time.Duration)
+	sortedPeers := syncmap.Map{}
 
 	// 1. Gets all the files that end in .config path in the config directory
 	files, err := ioutil.ReadDir("./config")
@@ -57,7 +59,8 @@ func main() {
 			log.Println("Config.Device.Peers[0]:", config.Device.Peers[0].Endpoint)
 			endpoint := config.Device.Peers[0].Endpoint
 			avgLatency := pingPeer(endpoint)
-			sortedPeers[file.Name()] = avgLatency
+			// sortedPeers[file.Name()] = avgLatency
+			sortedPeers.Store(file.Name(), avgLatency)
 			outputString := "(" + file.Name() + ") " + avgLatency.String() + "\n"
 			fmt.Print(outputString)
 		}(file)
@@ -66,12 +69,41 @@ func main() {
 
 	// Sort sortedPeers by latency
 	var keys []string
-	for k := range sortedPeers {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		return sortedPeers[keys[i]] < sortedPeers[keys[j]]
+
+	sortedPeers.Range(func(key, value interface{}) bool {
+		// cast value to correct format
+		val, ok := value.(string)
+		if !ok {
+			// this will break iteration
+			log.Fatal("Could not cast value to string")
+			return false
+		}
+		keys = append(keys, val)
+
+		// this will continue iterating
+		return true
 	})
+	// Sort sortedPeers by latency
+	sort.Slice(keys, func(i, j int) bool {
+		// cast value to correct format
+		val1, ok := sortedPeers.Load(keys[i])
+		if !ok {
+			// this will break iteration
+			log.Fatal("Could not cast value to string")
+			return false
+		}
+		val2, ok := sortedPeers.Load(keys[j])
+		if !ok {
+			// this will break iteration
+			log.Fatal("Could not cast value to string")
+			return false
+		}
+		return val1.(time.Duration) < val2.(time.Duration)
+	})
+
+	// sort.Slice(keys, func(i, j int) bool {
+	// 	return sortedPeers.Load([keys[i]]time.Duration) < sortedPeers.Load([keys[j]]time.Duration)
+	// })
 
 	f, err := os.Create("stats.txt")
 	if err != nil {
@@ -79,15 +111,36 @@ func main() {
 	}
 	defer f.Close()
 
+	// for _, k := range keys {
+	// 	outputString := "(" + k + ") " + sortedPeers.Load(k) + "\n"
+	// 	f.WriteString(outputString)
+	// 	f.Sync()
+	// }
+
+	// Interate through sortedPeers and write to stats.txt
 	for _, k := range keys {
-		outputString := "(" + k + ") " + sortedPeers[k].String() + "\n"
+		// cast value to correct format
+		val, ok := sortedPeers.Load(k)
+		if !ok {
+			// this will break iteration
+			log.Fatal("Could not cast value to string")
+			return
+		}
+		outputString := "(" + k + ") " + val.(time.Duration).String() + "\n"
 		f.WriteString(outputString)
 		f.Sync()
 	}
 
-	fmt.Println("Top 10 fastest peers:")
+	log.Println("Top 10 fastest peers:")
 	for i := 0; i < 10; i++ {
-		fmt.Println(strconv.Itoa(i+1)+". ("+keys[i]+")", sortedPeers[keys[i]])
+		val, ok := sortedPeers.Load(keys[i])
+		if !ok {
+			// this will break iteration
+			log.Fatal("Could not cast value to string")
+			return
+		}
+
+		log.Println(strconv.Itoa(i+1)+". ("+keys[i]+")", val.(time.Duration))
 	}
 	close(sem)
 
@@ -111,5 +164,6 @@ func pingPeer(endpoint string) time.Duration {
 	}
 	stats := pinger.Statistics() // get send/receive/duplicate/rtt stats
 	log.Println("Ping stats:", stats.AvgRtt)
+	pinger.Stop()
 	return stats.AvgRtt
 }
