@@ -1,0 +1,4 @@
+config/
+config_full/
+stats.txt
+.DS_Store
