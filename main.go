@@ -127,7 +127,7 @@ func pingPeer(endpoint string) time.Duration {
 	if err != nil {
 		panic(err)
 	}
-	pinger.Count = 1
+	pinger.Count = 3
 	err = pinger.Run() // Blocks until finished.
 	if err != nil {
 		panic(err)
