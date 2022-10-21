@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"io/ioutil"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/go-ping/ping"
 	wireproxy "github.com/octeep/wireproxy"
+	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/syncmap"
 )
 
@@ -21,7 +23,6 @@ func main() {
 	// Discards log output, comment out to see log output
 	log.SetOutput(ioutil.Discard)
 
-	// sortedPeers := make(map[string]time.Duration)
 	sortedPeers := syncmap.Map{}
 
 	// 1. Gets all the files that end in .config path in the config directory
@@ -34,16 +35,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	sem := make(chan struct{}, runtime.NumCPU())
-
 	var wg sync.WaitGroup
 	wg.Add(len(files))
+	sem := semaphore.NewWeighted(int64(runtime.NumCPU()))
 
 	for _, file := range files {
+		sem.Acquire(context.Background(), 1)
 		go func(file fs.FileInfo) {
-			sem <- struct{}{}
-			defer func() { <-sem }()
 			defer wg.Done()
+			defer sem.Release(1)
 
 			log.Println("Files in config directory:", file.Name())
 			filePath := path + "/config/" + file.Name()
@@ -68,42 +68,27 @@ func main() {
 	wg.Wait()
 
 	// Sort sortedPeers by latency
-	var keys []string
-
+	m := map[string]time.Duration{}
 	sortedPeers.Range(func(key, value interface{}) bool {
-		// cast value to correct format
-		val, ok := value.(string)
-		if !ok {
-			// this will break iteration
-			log.Fatal("Could not cast value to string")
-			return false
-		}
-		keys = append(keys, val)
-
-		// this will continue iterating
+		m[fmt.Sprint(key)] = value.(time.Duration)
 		return true
 	})
-	// Sort sortedPeers by latency
+	// Sort m map by value
+	keys := make([]string, 0, len(m))
+
+	for k := range m {
+		keys = append(keys, k)
+	}
+
 	sort.Slice(keys, func(i, j int) bool {
-		// cast value to correct format
-		val1, ok := sortedPeers.Load(keys[i])
-		if !ok {
-			// this will break iteration
-			log.Fatal("Could not cast value to string")
-			return false
-		}
-		val2, ok := sortedPeers.Load(keys[j])
-		if !ok {
-			// this will break iteration
-			log.Fatal("Could not cast value to string")
-			return false
-		}
-		return val1.(time.Duration) < val2.(time.Duration)
+		return m[keys[i]] < m[keys[j]]
 	})
 
-	// sort.Slice(keys, func(i, j int) bool {
-	// 	return sortedPeers.Load([keys[i]]time.Duration) < sortedPeers.Load([keys[j]]time.Duration)
-	// })
+	// Print sortedPeers
+	log.Println("Sorted peers:")
+	for _, k := range keys {
+		fmt.Println(k, m[k])
+	}
 
 	f, err := os.Create("stats.txt")
 	if err != nil {
@@ -111,40 +96,20 @@ func main() {
 	}
 	defer f.Close()
 
-	// for _, k := range keys {
-	// 	outputString := "(" + k + ") " + sortedPeers.Load(k) + "\n"
-	// 	f.WriteString(outputString)
-	// 	f.Sync()
-	// }
-
-	// Interate through sortedPeers and write to stats.txt
 	for _, k := range keys {
-		// cast value to correct format
-		val, ok := sortedPeers.Load(k)
-		if !ok {
-			// this will break iteration
-			log.Fatal("Could not cast value to string")
-			return
+		outputString := "(" + k + ") " + m[k].String() + "\n"
+		_, err := f.WriteString(outputString)
+		if err != nil {
+			log.Fatal(err)
 		}
-		outputString := "(" + k + ") " + val.(time.Duration).String() + "\n"
-		f.WriteString(outputString)
-		f.Sync()
 	}
 
-	log.Println("Top 10 fastest peers:")
+	// Print top 10 fastest peers
+	fmt.Println("\n\n\nTop 10 fastest peers:")
 	for i := 0; i < 10; i++ {
-		val, ok := sortedPeers.Load(keys[i])
-		if !ok {
-			// this will break iteration
-			log.Fatal("Could not cast value to string")
-			return
-		}
-
-		log.Println(strconv.Itoa(i+1)+". ("+keys[i]+")", val.(time.Duration))
+		outputString := strconv.Itoa(i+1) + ". (" + (keys[i]) + ") " + (m[keys[i]]).String() + "\n"
+		fmt.Print(outputString)
 	}
-	close(sem)
-
-	// 2.
 
 }
 
@@ -164,6 +129,5 @@ func pingPeer(endpoint string) time.Duration {
 	}
 	stats := pinger.Statistics() // get send/receive/duplicate/rtt stats
 	log.Println("Ping stats:", stats.AvgRtt)
-	pinger.Stop()
 	return stats.AvgRtt
 }
