@@ -38,13 +38,13 @@ func main() {
 	var wg sync.WaitGroup
 	wg.Add(len(files))
 	sem := semaphore.NewWeighted(int64(runtime.NumCPU()))
-
+	num := 0
 	for _, file := range files {
 		sem.Acquire(context.Background(), 1)
-		go func(file fs.FileInfo) {
-			defer wg.Done()
-			defer sem.Release(1)
 
+		go func(file fs.FileInfo) {
+			defer sem.Release(1)
+			defer wg.Done()
 			log.Println("Files in config directory:", file.Name())
 			filePath := path + "/config/" + file.Name()
 			log.Println("File path:", filePath)
@@ -61,12 +61,12 @@ func main() {
 			avgLatency := pingPeer(endpoint)
 			// sortedPeers[file.Name()] = avgLatency
 			sortedPeers.Store(file.Name(), avgLatency)
-			outputString := "(" + file.Name() + ") " + avgLatency.String() + "\n"
+			num++
+			outputString := strconv.Itoa(num) + ". (" + file.Name() + ") " + avgLatency.String() + "\n"
 			fmt.Print(outputString)
 		}(file)
 	}
-	wg.Wait()
-
+	log.Println("Sorting peers:", sortedPeers)
 	// Sort sortedPeers by latency
 	m := map[string]time.Duration{}
 	sortedPeers.Range(func(key, value interface{}) bool {
@@ -79,6 +79,8 @@ func main() {
 	for k := range m {
 		keys = append(keys, k)
 	}
+
+	log.Println("Keys:", keys)
 
 	sort.Slice(keys, func(i, j int) bool {
 		return m[keys[i]] < m[keys[j]]
@@ -95,9 +97,11 @@ func main() {
 		log.Fatal(err)
 	}
 	defer f.Close()
+	// wg.Wait()
 
 	for _, k := range keys {
 		outputString := "(" + k + ") " + m[k].String() + "\n"
+		log.Print("Writing to file:", outputString)
 		_, err := f.WriteString(outputString)
 		if err != nil {
 			log.Fatal(err)
@@ -110,6 +114,7 @@ func main() {
 		outputString := strconv.Itoa(i+1) + ". (" + (keys[i]) + ") " + (m[keys[i]]).String() + "\n"
 		fmt.Print(outputString)
 	}
+	os.Exit(0)
 
 }
 
@@ -122,7 +127,7 @@ func pingPeer(endpoint string) time.Duration {
 	if err != nil {
 		panic(err)
 	}
-	pinger.Count = 3
+	pinger.Count = 1
 	err = pinger.Run() // Blocks until finished.
 	if err != nil {
 		panic(err)
