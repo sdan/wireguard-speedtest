@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"sync"
@@ -17,14 +18,17 @@ import (
 	"github.com/go-ping/ping"
 	wireproxy "github.com/octeep/wireproxy"
 	"golang.org/x/sync/semaphore"
-	"golang.org/x/sync/syncmap"
 )
 
 func main() {
 	// Discards log output, comment out to see log output
-	// log.SetOutput(ioutil.Discard)
+	log.SetOutput(ioutil.Discard)
 
-	sortedPeers := syncmap.Map{}
+	type Peer struct {
+		Latency  time.Duration
+		Endpoint string
+	}
+	sortedPeers := make(map[string]Peer)
 
 	// 1. Gets all the files that end in .config path in the config directory
 	files, err := ioutil.ReadDir("./config")
@@ -39,7 +43,7 @@ func main() {
 
 	var wg sync.WaitGroup
 	wg.Add(len(files))
-	sem := semaphore.NewWeighted(int64(3))
+	sem := semaphore.NewWeighted(int64(runtime.NumCPU()))
 	num := 0
 	ipapiClient := http.Client{}
 	for _, file := range files {
@@ -64,37 +68,33 @@ func main() {
 			avgLatency, country := pingPeer(ipapiClient, endpoint)
 			log.Println("Avg latency:", avgLatency)
 			log.Println("Country:", country)
-			// sortedPeers[file.Name()] = avgLatency
-			sortedPeers.Store(file.Name(), avgLatency)
+			// sortedPeers[file.Name()] = {avgLatency, country}
+			// sortedPeers[file.Name()] = Peer{avgLatency, country}
+			if avgLatency > sortedPeers[country].Latency {
+				sortedPeers[country] = Peer{avgLatency, file.Name()}
+			}
+			// sortedPeers.Store(file.Name(), avgLatency)
 			num++
 			outputString := strconv.Itoa(num) + ". (" + file.Name() + ") " + avgLatency.String() + "\n"
 			fmt.Print(outputString)
 		}(file)
 	}
 	log.Println("Sorting peers:", sortedPeers)
-	// Sort sortedPeers by latency
-	m := map[string]time.Duration{}
-	sortedPeers.Range(func(key, value interface{}) bool {
-		m[fmt.Sprint(key)] = value.(time.Duration)
-		return true
-	})
-	// Sort m map by value
-	keys := make([]string, 0, len(m))
+	wg.Wait()
 
-	for k := range m {
+	// Sort sortedPeers by latency
+	keys := make([]string, 0, len(sortedPeers))
+	for k := range sortedPeers {
 		keys = append(keys, k)
 	}
-
-	log.Println("Keys:", keys)
-
 	sort.Slice(keys, func(i, j int) bool {
-		return m[keys[i]] < m[keys[j]]
+		return sortedPeers[keys[i]].Latency < sortedPeers[keys[j]].Latency
 	})
 
 	// Print sortedPeers
 	log.Println("Sorted peers:")
 	for _, k := range keys {
-		fmt.Println(k, m[k])
+		fmt.Println(k, sortedPeers[k])
 	}
 
 	f, err := os.Create("stats.txt")
@@ -105,7 +105,7 @@ func main() {
 	// wg.Wait()
 
 	for _, k := range keys {
-		outputString := "(" + k + ") " + m[k].String() + "\n"
+		outputString := "(" + k + ") " + sortedPeers[k].Latency.String() + "\n"
 		log.Print("Writing to file:", outputString)
 		_, err := f.WriteString(outputString)
 		if err != nil {
@@ -114,10 +114,12 @@ func main() {
 	}
 
 	// Print top 10 fastest peers
-	fmt.Println("\n\n\nTop 10 fastest peers:")
+	fmt.Println("\n\n\nTop 10 fastest peers by country:")
 	for i := 0; i < 10; i++ {
-		outputString := strconv.Itoa(i+1) + ". (" + (keys[i]) + ") " + (m[keys[i]]).String() + "\n"
-		fmt.Print(outputString)
+		// Print the country and latency and the name of the config file like this: (US) 1.2345ms (us1.config)
+		// outputString := "(" + keys[i] + ") " + sortedPeers[keys[i]].Latency.String() + "\n"
+		// fmt.Print(outputString)
+		fmt.Printf("(%-10s) %-15s (%s)\n", keys[i], sortedPeers[keys[i]].Latency.String(), sortedPeers[keys[i]].Endpoint)
 	}
 	os.Exit(0)
 
@@ -165,5 +167,7 @@ func pingPeer(geoClient http.Client, endpoint string) (time.Duration, string) {
 	}
 	stats := pinger.Statistics() // get send/receive/duplicate/rtt stats
 	log.Println("Ping stats:", stats.AvgRtt)
+	// Rate limiting wait
+	time.Sleep(10 * time.Millisecond)
 	return stats.AvgRtt, country
 }

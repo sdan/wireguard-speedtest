@@ -1,4 +1,5 @@
 config/
 config_full/
+config_real/
 stats.txt
 .DS_Store
