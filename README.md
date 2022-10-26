@@ -35,5 +35,8 @@ wg-netcheck
 │   │   us-dal-wg-102.conf
 │   │   us-sjc-wg-104.conf
 ```
+
+Make sure you delete any irrelevant dot files such as .DS_Store in the config dir!
+
 ### Limitations
 Works for IPv4 addresses only, IPv6 supported soon
