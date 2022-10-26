@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"sort"
 	"strconv"
@@ -20,7 +22,7 @@ import (
 
 func main() {
 	// Discards log output, comment out to see log output
-	log.SetOutput(ioutil.Discard)
+	// log.SetOutput(ioutil.Discard)
 
 	sortedPeers := syncmap.Map{}
 
@@ -29,6 +31,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	path, err := os.Getwd()
 	if err != nil {
 		log.Fatal(err)
@@ -36,8 +39,9 @@ func main() {
 
 	var wg sync.WaitGroup
 	wg.Add(len(files))
-	sem := semaphore.NewWeighted(int64(100))
+	sem := semaphore.NewWeighted(int64(3))
 	num := 0
+	ipapiClient := http.Client{}
 	for _, file := range files {
 		sem.Acquire(context.Background(), 1)
 
@@ -57,7 +61,9 @@ func main() {
 			log.Println("Config.Device.Peers:", config.Device.Peers)
 			log.Println("Config.Device.Peers[0]:", config.Device.Peers[0].Endpoint)
 			endpoint := config.Device.Peers[0].Endpoint
-			avgLatency := pingPeer(endpoint)
+			avgLatency, country := pingPeer(ipapiClient, endpoint)
+			log.Println("Avg latency:", avgLatency)
+			log.Println("Country:", country)
 			// sortedPeers[file.Name()] = avgLatency
 			sortedPeers.Store(file.Name(), avgLatency)
 			num++
@@ -118,9 +124,35 @@ func main() {
 }
 
 // Function that pings the endpoint of the peer and returns the latency
-func pingPeer(endpoint string) time.Duration {
+func pingPeer(geoClient http.Client, endpoint string) (time.Duration, string) {
 	// Trim last 6 characters of endpoint to get the IP address
 	endpoint = endpoint[:len(endpoint)-6]
+
+	url := "https://ipapi.co/" + endpoint + "/json/"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	req.Header.Set("User-Agent", "ipapi.co/#go-v1.3")
+	resp, err := geoClient.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println("Body:", string(body))
+	// Get country from body
+	var objmap map[string]interface{}
+	err = json.Unmarshal(body, &objmap)
+	if err != nil {
+		log.Fatal(err)
+	}
+	country := objmap["country_name"].(string)
+	log.Println("Country:", country)
+
 	log.Println("Pinging peer:", endpoint)
 	pinger, err := ping.NewPinger(endpoint)
 	if err != nil {
@@ -133,5 +165,5 @@ func pingPeer(endpoint string) time.Duration {
 	}
 	stats := pinger.Statistics() // get send/receive/duplicate/rtt stats
 	log.Println("Ping stats:", stats.AvgRtt)
-	return stats.AvgRtt
+	return stats.AvgRtt, country
 }
