@@ -7,7 +7,6 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"runtime"
 	"sort"
 	"strconv"
 	"sync"
@@ -37,7 +36,7 @@ func main() {
 
 	var wg sync.WaitGroup
 	wg.Add(len(files))
-	sem := semaphore.NewWeighted(int64(runtime.NumCPU()))
+	sem := semaphore.NewWeighted(int64(100))
 	num := 0
 	for _, file := range files {
 		sem.Acquire(context.Background(), 1)
