@@ -66,21 +66,18 @@ func main() {
 			log.Println("Config.Device.Peers[0]:", config.Device.Peers[0].Endpoint)
 			endpoint := config.Device.Peers[0].Endpoint
 			avgLatency, country := pingPeer(ipapiClient, endpoint)
-			log.Println("Avg latency:", avgLatency)
 			log.Println("Country:", country)
-			// sortedPeers[file.Name()] = {avgLatency, country}
-			// sortedPeers[file.Name()] = Peer{avgLatency, country}
-			if avgLatency > sortedPeers[country].Latency {
+			log.Println("Avg latency:", avgLatency)
+			log.Println("Current country leader:", sortedPeers[country].Latency)
+			if sortedPeers[country].Latency == 0 || avgLatency < sortedPeers[country].Latency {
 				sortedPeers[country] = Peer{avgLatency, file.Name()}
 			}
-			// sortedPeers.Store(file.Name(), avgLatency)
 			num++
 			outputString := strconv.Itoa(num) + ". (" + file.Name() + ") " + avgLatency.String() + "\n"
 			fmt.Print(outputString)
 		}(file)
 	}
 	log.Println("Sorting peers:", sortedPeers)
-	wg.Wait()
 
 	// Sort sortedPeers by latency
 	keys := make([]string, 0, len(sortedPeers))
@@ -102,10 +99,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer f.Close()
-	// wg.Wait()
 
 	for _, k := range keys {
-		outputString := "(" + k + ") " + sortedPeers[k].Latency.String() + "\n"
+		outputString := "(" + k + ") " + sortedPeers[k].Latency.String() + "(" + sortedPeers[k].Endpoint + ")\n"
 		log.Print("Writing to file:", outputString)
 		_, err := f.WriteString(outputString)
 		if err != nil {
@@ -117,8 +113,6 @@ func main() {
 	fmt.Println("\n\n\nTop 10 fastest peers by country:")
 	for i := 0; i < 10; i++ {
 		// Print the country and latency and the name of the config file like this: (US) 1.2345ms (us1.config)
-		// outputString := "(" + keys[i] + ") " + sortedPeers[keys[i]].Latency.String() + "\n"
-		// fmt.Print(outputString)
 		fmt.Printf("(%-10s) %-15s (%s)\n", keys[i], sortedPeers[keys[i]].Latency.String(), sortedPeers[keys[i]].Endpoint)
 	}
 	os.Exit(0)
@@ -130,30 +124,47 @@ func pingPeer(geoClient http.Client, endpoint string) (time.Duration, string) {
 	// Trim last 6 characters of endpoint to get the IP address
 	endpoint = endpoint[:len(endpoint)-6]
 
-	url := "https://ipapi.co/" + endpoint + "/json/"
+	url := "https://tools.keycdn.com/geo.json?host=" + endpoint
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	req.Header.Set("User-Agent", "ipapi.co/#go-v1.3")
+	req.Header.Set("User-Agent", "keycdn-tools:https://example.com")
 	resp, err := geoClient.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("resp error", err)
 	}
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("body error", err)
 	}
 	log.Println("Body:", string(body))
 	// Get country from body
-	var objmap map[string]interface{}
+	objmap := make(map[string]*json.RawMessage)
 	err = json.Unmarshal(body, &objmap)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("unmarshal error", err)
 	}
-	country := objmap["country_name"].(string)
-	log.Println("Country:", country)
+	// Sample data: {"status":"success","description":"Data successfully received.","data":{"geo":{"host":"146.70.116.130","ip":"146.70.116.130","rdns":"146.70.116.130","asn":9009,"isp":"M247 Europe SRL","country_name":"Austria","country_code":"AT","region_name":"Vienna","region_code":"9","city":"Vienna","postal_code":"1230","continent_name":"Europe","continent_code":"EU","latitude":48.1436,"longitude":16.2941,"metro_code":null,"timezone":"Europe\/Vienna","datetime":"2022-10-26 09:32:27"}}}
+	// Unmarshal the data.geo.region_code field to get the country code
+
+	err = json.Unmarshal(*objmap["data"], &objmap)
+	if err != nil {
+		log.Fatal("data un", err)
+	}
+	err = json.Unmarshal(*objmap["geo"], &objmap)
+	if err != nil {
+		log.Fatal("geo err", err)
+	}
+	// Unmarshal region name and if that fails, unmarshal country name, handle if region name is null
+	var country string
+	err = json.Unmarshal(*objmap["country_name"], &country)
+	if err != nil {
+		log.Print("country name err", err)
+	}
+
+	log.Println("Country name:", country)
 
 	log.Println("Pinging peer:", endpoint)
 	pinger, err := ping.NewPinger(endpoint)
@@ -164,10 +175,10 @@ func pingPeer(geoClient http.Client, endpoint string) (time.Duration, string) {
 	err = pinger.Run() // Blocks until finished.
 	if err != nil {
 		panic(err)
+
 	}
 	stats := pinger.Statistics() // get send/receive/duplicate/rtt stats
 	log.Println("Ping stats:", stats.AvgRtt)
-	// Rate limiting wait
-	time.Sleep(10 * time.Millisecond)
+
 	return stats.AvgRtt, country
 }
