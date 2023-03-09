@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"runtime"
 	"sort"
 	"strconv"
 	"sync"
@@ -28,6 +27,12 @@ func main() {
 		Latency  time.Duration
 		Endpoint string
 	}
+
+	type SafePeers struct {
+		sync.Mutex
+		Peers map[string]Peer
+	}
+
 	sortedPeers := make(map[string]Peer)
 
 	// 1. Gets all the files that end in .config path in the config directory
@@ -43,13 +48,16 @@ func main() {
 
 	var wg sync.WaitGroup
 	wg.Add(len(files))
-	sem := semaphore.NewWeighted(int64(runtime.NumCPU()))
+	sem := semaphore.NewWeighted(8)
 	num := 0
+	safePeers := SafePeers{Peers: make(map[string]Peer)}
 	ipapiClient := http.Client{}
 	for _, file := range files {
 		sem.Acquire(context.Background(), 1)
-
 		go func(file fs.FileInfo) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
 			defer sem.Release(1)
 			defer wg.Done()
 			log.Println("Files in config directory:", file.Name())
@@ -65,13 +73,23 @@ func main() {
 			log.Println("Config.Device.Peers:", config.Device.Peers)
 			log.Println("Config.Device.Peers[0]:", config.Device.Peers[0].Endpoint)
 			endpoint := config.Device.Peers[0].Endpoint
-			avgLatency, country := pingPeer(ipapiClient, endpoint)
+			avgLatency, country := pingPeer(ctx, ipapiClient, endpoint)
 			log.Println("Country:", country)
 			log.Println("Avg latency:", avgLatency)
 			log.Println("Current country leader:", sortedPeers[country].Latency)
-			if sortedPeers[country].Latency == 0 || avgLatency < sortedPeers[country].Latency {
-				sortedPeers[country] = Peer{avgLatency, file.Name()}
+
+			if val, ok := safePeers.Peers[country]; ok {
+				safePeers.Lock()
+				if val.Latency == 0 || avgLatency < val.Latency {
+					safePeers.Peers[country] = Peer{avgLatency, file.Name()}
+				}
+				safePeers.Unlock()
+			} else {
+				safePeers.Lock()
+				safePeers.Peers[country] = Peer{avgLatency, file.Name()}
+				safePeers.Unlock()
 			}
+
 			num++
 			outputString := strconv.Itoa(num) + ". (" + file.Name() + ") " + avgLatency.String() + "\n"
 			fmt.Print(outputString)
@@ -80,13 +98,16 @@ func main() {
 	log.Println("Sorting peers:", sortedPeers)
 
 	// Sort sortedPeers by latency
-	keys := make([]string, 0, len(sortedPeers))
-	for k := range sortedPeers {
+
+	safePeers.Lock()
+	keys := make([]string, 0, len(safePeers.Peers))
+	for k := range safePeers.Peers {
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool {
-		return sortedPeers[keys[i]].Latency < sortedPeers[keys[j]].Latency
+		return safePeers.Peers[keys[i]].Latency < safePeers.Peers[keys[j]].Latency
 	})
+	safePeers.Unlock()
 
 	// Print sortedPeers
 	log.Println("Sorted peers:")
@@ -100,27 +121,30 @@ func main() {
 	}
 	defer f.Close()
 
+	safePeers.Lock()
 	for _, k := range keys {
-		outputString := "(" + k + ") " + sortedPeers[k].Latency.String() + "(" + sortedPeers[k].Endpoint + ")\n"
+		outputString := "(" + k + ") " + safePeers.Peers[k].Latency.String() + "(" + safePeers.Peers[k].Endpoint + ")\n"
 		log.Print("Writing to file:", outputString)
 		_, err := f.WriteString(outputString)
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
+	safePeers.Unlock()
 
-	// Print top 10 fastest peers
+	// Inside the top 10 fastest peers section, use the safePeers mutex to access the map
 	fmt.Println("\n\n\nTop 10 fastest peers by country:")
-	for i := 0; i < 10; i++ {
-		// Print the country and latency and the name of the config file like this: (US) 1.2345ms (us1.config)
-		fmt.Printf("(%-10s) %-15s (%s)\n", keys[i], sortedPeers[keys[i]].Latency.String(), sortedPeers[keys[i]].Endpoint)
+	safePeers.Lock()
+	for i := 0; i < 10 && i < len(keys); i++ {
+		fmt.Printf("(%-10s) %-15s (%s)\n", keys[i], safePeers.Peers[keys[i]].Latency.String(), safePeers.Peers[keys[i]].Endpoint)
 	}
+	safePeers.Unlock()
 	os.Exit(0)
 
 }
 
 // Function that pings the endpoint of the peer and returns the latency
-func pingPeer(geoClient http.Client, endpoint string) (time.Duration, string) {
+func pingPeer(ctx context.Context, geoClient http.Client, endpoint string) (time.Duration, string) {
 	// Trim last 6 characters of endpoint to get the IP address
 	endpoint = endpoint[:len(endpoint)-6]
 
@@ -172,11 +196,22 @@ func pingPeer(geoClient http.Client, endpoint string) (time.Duration, string) {
 		panic(err)
 	}
 	pinger.Count = 3
-	err = pinger.Run() // Blocks until finished.
-	if err != nil {
-		panic(err)
 
+	done := make(chan struct{})
+	go func() {
+		err = pinger.Run() // Blocks until finished.
+		close(done)
+	}()
+	select {
+	case <-done:
+		if err != nil {
+			panic(err)
+		}
+	case <-ctx.Done():
+		pinger.Stop()
+		return 99999999, "NaN"
 	}
+
 	stats := pinger.Statistics() // get send/receive/duplicate/rtt stats
 	log.Println("Ping stats:", stats.AvgRtt)
 
