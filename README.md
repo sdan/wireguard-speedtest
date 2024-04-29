@@ -1,4 +1,4 @@
-# wg-netcheck
+# wireguard-speedtest
 
 Print latency analysis of Wireguard config files. This is useful if you use a consumer VPN service like Mullvad and/or have a bunch of Wireguard configurations that you want to know the latency to.
 
